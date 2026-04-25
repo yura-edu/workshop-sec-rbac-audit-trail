@@ -1,0 +1,17 @@
+-- TODO: Crea la tabla audit_log según el schema especificado en el README.
+--
+-- Campos requeridos:
+--   id           INTEGER PRIMARY KEY AUTOINCREMENT
+--   request_id   TEXT NOT NULL   (UUID v4 — correlaciona todos los logs de la misma request)
+--   user_id      INTEGER         (FK a users(id) — puede ser NULL para requests no autenticadas)
+--   action       TEXT NOT NULL   (e.g. "posts:read", "posts:delete", "users:read")
+--   resource_id  TEXT            (ID del recurso afectado, puede ser NULL)
+--   result       TEXT NOT NULL   ("success", "forbidden", "error")
+--   ip_address   TEXT            (IP del cliente)
+--   user_agent   TEXT            (User-Agent header)
+--   occurred_at  DATETIME        (DEFAULT CURRENT_TIMESTAMP — siempre desde el servidor)
+--
+-- IMPORTANTE: Esta tabla es append-only.
+-- La aplicación solo debe tener permiso de INSERT sobre ella, nunca UPDATE ni DELETE.
+
+-- Escribe tu CREATE TABLE aquí:

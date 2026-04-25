@@ -1,0 +1,274 @@
+name: Grader
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      # ── Métrica: rbac_implemented ──────────────────────────────────────────
+      - name: Check RBAC middleware implementation
+        id: rbac_implemented
+        run: |
+          SCORE=0
+          TOTAL=4
+
+          # 1. PERMISSIONS object defined with 3 roles
+          if grep -rE "ADMIN|EDITOR|VIEWER" src/authorization/permissions.config.ts -q 2>/dev/null; then
+            SCORE=$((SCORE+1))
+            echo "✅ Roles found in permissions.config.ts"
+          else
+            echo "❌ Roles (ADMIN/EDITOR/VIEWER) not found in permissions.config.ts"
+          fi
+
+          # 2. PERMISSIONS map has entries (not empty object)
+          if grep -rE "(read|create|update|delete)" src/authorization/permissions.config.ts -q 2>/dev/null; then
+            SCORE=$((SCORE+1))
+            echo "✅ Permission actions found in config"
+          else
+            echo "❌ No permission actions found — implement the PERMISSIONS map"
+          fi
+
+          # 3. rbac.middleware.ts calls next() AND returns 403
+          if grep -qE "403|Forbidden|forbidden" src/authorization/rbac.middleware.ts 2>/dev/null; then
+            SCORE=$((SCORE+1))
+            echo "✅ 403 response found in rbac.middleware.ts"
+          else
+            echo "❌ No 403 response in rbac.middleware.ts — implement the forbidden branch"
+          fi
+
+          # 4. PERMISSIONS lookup present
+          if grep -qE "PERMISSIONS\[|\.includes\(" src/authorization/rbac.middleware.ts 2>/dev/null; then
+            SCORE=$((SCORE+1))
+            echo "✅ PERMISSIONS lookup found in rbac.middleware.ts"
+          else
+            echo "❌ No PERMISSIONS lookup in rbac.middleware.ts"
+          fi
+
+          FINAL=$(node -e "console.log(($SCORE/$TOTAL).toFixed(3))")
+          echo "score=$FINAL" >> "$GITHUB_OUTPUT"
+          if [ "$SCORE" -ge 3 ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ RBAC implemented ($SCORE/$TOTAL checks)"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ RBAC incomplete ($SCORE/$TOTAL checks)"
+          fi
+
+      # ── Métrica: audit_log_present ─────────────────────────────────────────
+      - name: Check audit_log migration
+        id: audit_log_present
+        run: |
+          MIGRATION="migrations/002_audit_log.sql"
+
+          if [ ! -f "$MIGRATION" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ migrations/002_audit_log.sql not found"
+            exit 0
+          fi
+
+          SCORE=0
+          grep -qiE "CREATE TABLE.*audit_log" "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: CREATE TABLE audit_log"
+          grep -qE "request_id"                "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: request_id column"
+          grep -qE "occurred_at|CURRENT_TIMESTAMP" "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: occurred_at column"
+          grep -qE "user_id"                   "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: user_id column"
+          grep -qE "action"                    "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: action column"
+          grep -qE "result"                    "$MIGRATION" && SCORE=$((SCORE+1)) || echo "❌ Missing: result column"
+
+          FINAL=$(node -e "console.log(($SCORE/6).toFixed(3))")
+          echo "score=$FINAL" >> "$GITHUB_OUTPUT"
+          if [ "$SCORE" -ge 5 ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ audit_log table has required fields ($SCORE/6)"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ audit_log schema incomplete ($SCORE/6 required fields)"
+          fi
+
+      # ── Métrica: test_pass_rate ────────────────────────────────────────────
+      - name: Run all tests
+        id: test_run
+        env:
+          DATABASE_URL: ":memory:"
+          JWT_SECRET: "grader-test-secret-do-not-use-in-prod"
+          JWT_REFRESH_SECRET: "grader-refresh-secret-do-not-use-in-prod"
+        run: |
+          set +e
+          npx jest --json --outputFile=jest-results.json 2>&1
+          TEST_EXIT=$?
+          set -e
+
+          if [ ! -f "jest-results.json" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ jest-results.json not found"
+            exit 0
+          fi
+
+          TOTAL=$(node -e "try{const r=require('./jest-results.json');console.log(r.numTotalTests||0)}catch(e){console.log(0)}")
+          PASSED=$(node -e "try{const r=require('./jest-results.json');console.log(r.numPassedTests||0)}catch(e){console.log(0)}")
+          PENDING=$(node -e "try{const r=require('./jest-results.json');console.log(r.numPendingTests||0)}catch(e){console.log(0)}")
+
+          RUNNABLE=$((TOTAL - PENDING))
+
+          if [ "$RUNNABLE" -eq 0 ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No runnable tests found — implement the it.todo() cases in rbac.test.ts"
+          elif [ "$TEST_EXIT" -eq 0 ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ All $RUNNABLE tests pass"
+          else
+            RATE=$(node -e "console.log(($PASSED/$RUNNABLE).toFixed(3))")
+            echo "score=$RATE" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ $PASSED/$RUNNABLE tests pass"
+          fi
+
+      # ── Métrica: authorization_test_coverage ──────────────────────────────
+      - name: Check authorization test coverage
+        id: auth_coverage
+        env:
+          DATABASE_URL: ":memory:"
+          JWT_SECRET: "grader-test-secret-do-not-use-in-prod"
+          JWT_REFRESH_SECRET: "grader-refresh-secret-do-not-use-in-prod"
+        run: |
+          set +e
+          npx jest tests/authorization/ --json --outputFile=rbac-results.json 2>&1
+          set -e
+
+          if [ ! -f "rbac-results.json" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No authorization test results"
+            exit 0
+          fi
+
+          TOTAL=$(node -e "try{const r=require('./rbac-results.json');console.log(r.numTotalTests||0)}catch(e){console.log(0)}")
+          PASSED=$(node -e "try{const r=require('./rbac-results.json');console.log(r.numPassedTests||0)}catch(e){console.log(0)}")
+          PENDING=$(node -e "try{const r=require('./rbac-results.json');console.log(r.numPendingTests||0)}catch(e){console.log(0)}")
+
+          RUNNABLE=$((TOTAL - PENDING))
+
+          if [ "$RUNNABLE" -lt 5 ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ Too few authorization tests ($RUNNABLE runnable — need ≥ 5)"
+          else
+            RATE=$(node -e "console.log(($PASSED/$RUNNABLE).toFixed(3))")
+            echo "score=$RATE" >> "$GITHUB_OUTPUT"
+            if [ "$PASSED" -ge $((RUNNABLE * 4 / 5)) ]; then
+              echo "passed=true" >> "$GITHUB_OUTPUT"
+              echo "✅ Authorization coverage: $PASSED/$RUNNABLE tests pass (≥ 80%)"
+            else
+              echo "passed=false" >> "$GITHUB_OUTPUT"
+              echo "❌ Authorization coverage: $PASSED/$RUNNABLE tests pass (need ≥ 80%)"
+            fi
+          fi
+
+      # ── Métrica: sast_findings ─────────────────────────────────────────────
+      - name: SAST — check for high-severity patterns
+        id: sast
+        run: |
+          FINDINGS=0
+
+          if grep -rE "(db\.(run|get|all|prepare)|\.query)\s*\(\s*[\`'\"][^\`'\"]*\s*\+" src/ --include="*.ts" -q 2>/dev/null; then
+            FINDINGS=$((FINDINGS+1))
+            echo "⚠️  Possible SQL injection: string concatenation in DB query"
+          fi
+
+          if grep -rE "\beval\s*\(" src/ --include="*.ts" -q 2>/dev/null; then
+            FINDINGS=$((FINDINGS+1))
+            echo "⚠️  eval() detected"
+          fi
+
+          if grep -rEi "console\.(log|error|warn).*password" src/ --include="*.ts" -q 2>/dev/null; then
+            FINDINGS=$((FINDINGS+1))
+            echo "⚠️  Possible password logging detected"
+          fi
+
+          if grep -rE "JWT_SECRET\s*=\s*['\"][^'\"]{4,}['\"]" src/ --include="*.ts" -q 2>/dev/null; then
+            FINDINGS=$((FINDINGS+1))
+            echo "⚠️  Hardcoded JWT_SECRET detected"
+          fi
+
+          if [ "$FINDINGS" -eq 0 ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ No high-severity SAST findings"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ $FINDINGS SAST finding(s)"
+          fi
+
+      # ── Reporte final ──────────────────────────────────────────────────────
+      - name: Build grader report
+        run: |
+          cat > grader-report.json << EOF
+          {
+            "schemaVersion": "1.0",
+            "templateSlug": "sec-rbac-audit-trail",
+            "runId": "${{ github.run_id }}",
+            "sha": "${{ github.sha }}",
+            "metrics": [
+              {
+                "metricKey": "rbac_implemented",
+                "score": ${{ steps.rbac_implemented.outputs.score }},
+                "passed": ${{ steps.rbac_implemented.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "audit_log_present",
+                "score": ${{ steps.audit_log_present.outputs.score }},
+                "passed": ${{ steps.audit_log_present.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "authorization_test_coverage",
+                "score": ${{ steps.auth_coverage.outputs.score }},
+                "passed": ${{ steps.auth_coverage.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "test_pass_rate",
+                "score": ${{ steps.test_run.outputs.score }},
+                "passed": ${{ steps.test_run.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "sast_findings",
+                "score": ${{ steps.sast.outputs.score }},
+                "passed": ${{ steps.sast.outputs.passed }},
+                "unavailable": false
+              }
+            ]
+          }
+          EOF
+          cat grader-report.json
+
+      - name: Upload grader report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grader-report
+          path: grader-report.json
