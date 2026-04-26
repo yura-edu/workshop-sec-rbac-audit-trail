@@ -1,0 +1,58 @@
+# yura.workshop.yaml — declarative grader config
+# Spec: docs/grader-workers-spec.md §6
+# Generated from prisma/seeds/workshop-templates.seed.ts
+
+schema_version: "1.0"
+workshop:
+  id: sec-rbac-audit-trail
+  title: "RBAC con trazabilidad de acciones"
+  type: workshop
+  language: typescript
+  passing_threshold: 70
+  base_branch: main
+submission:
+  source: workshop_link
+  required_inputs:
+    - type: github_repo_url
+      label: "URL del repositorio"
+      required: true
+evaluation_profile:
+  - metric_id: rbac_implementation_present
+    weight: 25
+    threshold: 1
+    config:
+      patterns:
+        - role
+        - permission
+        - "@Roles"
+        - "@RequireRole"
+  - metric_id: audit_log_presence
+    weight: 25
+    threshold: 1
+    config:
+      table_or_pattern: audit_log
+      append_only_check: true
+  - metric_id: authz_test_coverage
+    weight: 20
+    threshold: 0.8
+    config:
+      paths:
+        - tests/authz/
+        - tests/security/
+      min_ratio: 0.8
+  - metric_id: sast_high_findings
+    weight: 15
+    threshold: 0
+    config:
+      tool: semgrep
+      severity: HIGH
+      max_findings: 0
+  - metric_id: test_pass_rate
+    weight: 15
+    threshold: 1
+    config:
+      runner: vitest
+      report_format: vitest_json
+      report_path: reports/test-results.json
+      min_pass_rate_percent: 100
+      timeout_seconds: 300
